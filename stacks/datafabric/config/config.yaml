@@ -1,0 +1,30 @@
+kafka:
+  broker: "kafka:9092"
+  canonical_topic: "ecolab.beacon.canonical.v1"
+  processed_topic: "fabric.processed.v1"
+  consumer_group: "fabric-flink"
+
+schema_registry:
+  url: "http://schema-registry:8085"
+  subject: "ecolab.beacon.canonical.v1-value"
+
+postgres:
+  host: "postgres"
+  port: 5432
+  db: "archdb"
+  user: "archuser"
+  password: "archpass"
+
+machines:
+  csv_path: "/config/reference-data/Machines_simulatedV1.csv"
+
+integration_api:
+  host: "0.0.0.0"
+  port: 8088
+
+feature_builder:
+  interval_seconds: 30
+  batch_size: 500
+
+logging:
+  level: "INFO"

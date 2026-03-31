@@ -1,0 +1,80 @@
+logging:
+  level: INFO
+  log_to_file: true             
+  log_dir: results/logs         
+
+runner:
+  repeats: 5
+  warmup_minutes: 5
+  measurement_minutes: 300
+  settle_seconds: 30
+
+paths:
+  results_dir: results
+  data_dir: data
+
+kafka:
+  broker: "localhost:29092"
+  topic: "ecolab.beacon.canonical.v1"
+
+postgres:
+  host: localhost
+  port: 5432
+  dbname: archdb
+  user: archuser
+  password: archpass
+
+architectures:
+  - baseline
+  - lambda
+  - kappa
+  - datafabric
+  - datamesh
+
+workloads:
+  A:
+    description: "Realistic trace replay (event-time pacing, 10× speed)"
+    enabled: true
+    mode: real # real | replicated
+    speed_factor: 10 # time-warp multiplier (0 = no pacing)
+    replication_factor: 1 # device cloning (1 = no cloning)
+    rate: null # max msg/s cap (null = unlimited)
+    fault_injection: 0.0 # fraction of events with injected faults
+
+  B:
+    description: "High-rate stress test (50× device replication, 2500 msg/s)"
+    enabled: true
+    mode: replicated
+    speed_factor: 0
+    replication_factor: 50
+    rate: 2500
+    fault_injection: 0.0        
+
+  C:
+    description: "Defect mode: stress test with 2% late/future timestamp faults"
+    enabled: true
+    mode: replicated
+    speed_factor: 0
+    replication_factor: 50
+    rate: 2500
+    fault_injection: 0.02
+
+  D:
+    description: "Sustained stress: 2500 msg/s for 120s wall-clock (cycled events)"
+    enabled: true
+    mode: replicated
+    speed_factor: 0
+    replication_factor: 50
+    rate: 2500
+    sustained_seconds: 120
+    fault_injection: 0.0
+
+  E:
+    description: "Schema violation test: 5% events with invalid sensor values (outside 0-255)"
+    enabled: true
+    mode: replicated
+    speed_factor: 0
+    replication_factor: 50
+    rate: 2500
+    schema_violation_rate: 0.10
+    fault_injection: 0.0

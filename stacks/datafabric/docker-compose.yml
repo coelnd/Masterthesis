@@ -1,0 +1,372 @@
+name: thesis-datafabric
+services:
+  kafka:
+    image: confluentinc/cp-kafka:latest
+    container_name: datafabric-kafka
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,PLAINTEXT_HOST://:29092,CONTROLLER://:29093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:29093
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      CLUSTER_ID: 'datafabriccluster000001'
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_LOG_MESSAGE_TIMESTAMP_TYPE: LogAppendTime
+    ports:
+      - "29092:29092"
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+      - kafka-logs:/var/log/kafka
+    networks:
+      - datafabric-net
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server localhost:9092 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    restart: unless-stopped
+
+  kafka-init:
+    image: confluentinc/cp-kafka:latest
+    container_name: datafabric-kafka-init
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command: >
+      "
+      echo 'Waiting for Kafka readiness...' &&
+      sleep 5 &&
+      kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic ecolab.beacon.canonical.v1 --partitions 12 --replication-factor 1 --config cleanup.policy=delete --config retention.ms=604800000 &&
+      kafka-topics --bootstrap-server kafka:9092 --alter --topic ecolab.beacon.canonical.v1 --partitions 12 2>/dev/null || true &&
+      exit 0
+      "
+    networks:
+      - datafabric-net
+    restart: "no"
+
+  schema-registry:
+    image: confluentinc/cp-schema-registry:7.6.0
+    container_name: datafabric-schema-registry
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      SCHEMA_REGISTRY_HOST_NAME: schema-registry
+      SCHEMA_REGISTRY_LISTENERS: http://0.0.0.0:8085
+      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: PLAINTEXT://kafka:9092
+      SCHEMA_REGISTRY_KAFKASTORE_TOPIC: _schemas
+      SCHEMA_REGISTRY_DEBUG: "true"
+    ports:
+      - "8085:8085"
+    networks:
+      - datafabric-net
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8085/subjects || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 15
+      start_period: 15s
+    restart: unless-stopped
+
+  schema-init:
+    image: python:3.10-slim
+    container_name: datafabric-schema-init
+    depends_on:
+      schema-registry:
+        condition: service_healthy
+    volumes:
+      - ./schemas:/schemas:ro
+      - ./scripts:/scripts:ro
+    environment:
+      SCHEMA_REGISTRY_URL: http://schema-registry:8085
+      SCHEMA_SUBJECT: ecolab.beacon.canonical.v1-value
+      SCHEMA_FILE: /schemas/beacon_event.schema.json
+      SCHEMA_TYPE: JSON
+    entrypoint: ["python", "/scripts/register_schema.py"]
+    networks:
+      - datafabric-net
+    restart: "no"
+
+  postgres:
+    image: postgres:15
+    container_name: datafabric-postgres
+    environment:
+      POSTGRES_DB: archdb
+      POSTGRES_USER: archuser
+      POSTGRES_PASSWORD: archpass
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./config/database:/docker-entrypoint-initdb.d
+      - postgres-logs:/var/log/postgresql
+    networks:
+      - datafabric-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U archuser -d archdb"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 10s
+    restart: unless-stopped
+
+  machines-loader:
+    image: python:3.10-slim
+    container_name: datafabric-machines-loader
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ../../common/python:/opt/arch_common:ro
+      - ./config/reference-data:/config/reference-data:ro
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_DB: archdb
+      POSTGRES_USER: archuser
+      POSTGRES_PASSWORD: archpass
+      MACHINE_CSV_PATH: /config/reference-data/Machines_simulatedV1.csv
+    entrypoint: ["/bin/sh", "-c"]
+    command: >
+      "
+      pip install --no-cache-dir psycopg2-binary confluent-kafka >/tmp/pip.log &&
+      PYTHONPATH=/opt/arch_common python -m arch_common.machine_loader &&
+      echo 'Machines loaded'
+      "
+    networks:
+      - datafabric-net
+    restart: "no"
+
+  feature-builder:
+    build:
+      context: ../../
+      dockerfile: stacks/datafabric/services/feature_builder/Dockerfile
+    container_name: datafabric-feature-builder
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      CONFIG_PATH: /config/config.yaml
+      ARCHITECTURE: datafabric
+      LOG_LEVEL: INFO
+    volumes:
+      - ./config:/config
+    ports:
+      - "9107:9107"
+    networks:
+      - datafabric-net
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+        labels: "service=feature-builder,architecture=datafabric"
+    restart: unless-stopped
+
+  fabric-flink-jobmanager:
+    build:
+      context: ../../
+      dockerfile: stacks/datafabric/services/fabric_flink/Dockerfile
+    image: datafabric-flink:1.20.0
+    container_name: fabric-flink-jobmanager
+    command: jobmanager
+    environment:
+      JOB_MANAGER_RPC_ADDRESS: fabric-flink-jobmanager
+      CONFIG_PATH: /config/config.yaml
+      KAFKA_BROKER: kafka:9092
+      POSTGRES_HOST: postgres
+      POSTGRES_DB: archdb
+      POSTGRES_USER: archuser
+      POSTGRES_PASSWORD: archpass
+      SCHEMA_PATH: /schemas/beacon_event.schema.json
+      LOG_LEVEL: INFO
+    ports:
+      - "9081:8081"
+    depends_on:
+      kafka:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+      schema-init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      machines-loader:
+        condition: service_completed_successfully
+    volumes:
+      - ./services/fabric_flink/src:/opt/flink/usrlib
+      - ./config:/config
+      - ./schemas:/schemas
+      - ./config/flink-conf.yaml:/opt/flink/conf/flink-conf.yaml
+      - flink-jobmanager-logs:/opt/flink/log
+    networks:
+      - datafabric-net
+    restart: unless-stopped
+
+  fabric-flink-taskmanager:
+    image: datafabric-flink:1.20.0
+    container_name: fabric-flink-taskmanager
+    command: taskmanager
+    environment:
+      JOB_MANAGER_RPC_ADDRESS: fabric-flink-jobmanager
+      CONFIG_PATH: /config/config.yaml
+      KAFKA_BROKER: kafka:9092
+      POSTGRES_HOST: postgres
+      POSTGRES_DB: archdb
+      POSTGRES_USER: archuser
+      POSTGRES_PASSWORD: archpass
+      SCHEMA_PATH: /schemas/beacon_event.schema.json
+      LOG_LEVEL: INFO
+    depends_on:
+      fabric-flink-jobmanager:
+        condition: service_started
+    volumes:
+      - ./services/fabric_flink/src:/opt/flink/usrlib
+      - ./config:/config
+      - ./schemas:/schemas
+      - ./config/flink-conf.yaml:/opt/flink/conf/flink-conf.yaml
+      - flink-taskmanager-logs:/opt/flink/log
+    networks:
+      - datafabric-net
+    restart: unless-stopped
+
+  fabric-flink-job-submitter:
+    image: datafabric-flink:1.20.0
+    container_name: fabric-flink-job-submitter
+    depends_on:
+      fabric-flink-jobmanager:
+        condition: service_started
+      fabric-flink-taskmanager:
+        condition: service_started
+    entrypoint: ["/bin/bash", "-c"]
+    command: >
+      "
+      for i in {1..30}; do
+        if curl -s http://fabric-flink-jobmanager:8081/overview >/dev/null; then
+          break;
+        fi;
+        sleep 2;
+      done &&
+      /opt/flink/bin/flink run --jobmanager fabric-flink-jobmanager:8081 -py /opt/flink/usrlib/fabric_processor.py -d
+      "
+    volumes:
+      - ./services/fabric_flink/src:/opt/flink/usrlib
+      - ./config:/config
+      - ./schemas:/schemas
+    networks:
+      - datafabric-net
+    restart: "no"
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: datafabric-prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=30d"
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./config/monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus-data:/prometheus
+      - prometheus-logs:/var/log/prometheus
+    depends_on:
+      - fabric-flink-job-submitter
+    networks:
+      - datafabric-net
+    extra_hosts:
+      - "host.docker.internal:host-gateway"  # Enable access to host from container
+    restart: unless-stopped
+
+
+  postgres-exporter:
+    image: quay.io/prometheuscommunity/postgres-exporter:latest
+    container_name: datafabric-postgres-exporter
+    environment:
+      DATA_SOURCE_NAME: "postgresql://archuser:archpass@postgres:5432/archdb?sslmode=disable"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "9187:9187"
+    networks:
+      - datafabric-net
+    restart: unless-stopped
+
+  kafka-exporter:
+    image: danielqsj/kafka-exporter:latest
+    container_name: datafabric-kafka-exporter
+    command:
+      - "--kafka.server=kafka:9092"
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "9308:9308"
+    networks:
+      - datafabric-net
+    restart: unless-stopped
+
+  node-exporter:
+    image: prom/node-exporter:latest
+    container_name: datafabric-node-exporter
+    restart: unless-stopped
+    pid: "host"
+    network_mode: "host"
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.sysfs=/host/sys'
+      - '--collector.filesystem.ignored-mount-points="^/(sys|proc|dev|host|etc)($$|/)"'
+    ports:
+      - "9100:9100"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+        labels: "service=node-exporter,architecture=datafabric"
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:latest
+    container_name: datafabric-cadvisor
+    restart: unless-stopped
+    ports:
+      - "8089:8080"
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+    networks:
+      - datafabric-net
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+        labels: "service=cadvisor,architecture=datafabric"
+
+networks:
+  datafabric-net:
+    driver: bridge
+
+volumes:
+  kafka-data:
+  kafka-logs:
+  pgdata:
+  postgres-logs:
+  flink-jobmanager-logs:
+  flink-taskmanager-logs:
+  prometheus-data:
+  prometheus-logs:

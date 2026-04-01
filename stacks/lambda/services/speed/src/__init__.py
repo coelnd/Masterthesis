@@ -1,1 +1,0 @@
-"""Lambda speed layer"""

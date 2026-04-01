@@ -1,5 +1,0 @@
-psycopg2-binary
-pandas
-pyyaml
-numpy
-confluent-kafka

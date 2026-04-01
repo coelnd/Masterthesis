@@ -1,0 +1,10 @@
+__pycache__/
+
+.venv/
+venv/
+env/
+
+.env
+
+results/*
+results_smoke/

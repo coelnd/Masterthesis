@@ -1,0 +1,42 @@
+kafka:
+  broker: "kafka:9092"
+  topic: "ecolab.beacon.canonical.v1"
+  consumer_group_id: "datamesh-consumer"
+
+postgres:
+  host: "postgres"
+  db: "archdb"
+  user: "archuser"
+  password: "archpass"
+  port: 5432
+
+monitoring:
+  prometheus_port: 8000
+
+feature_builder:
+  interval_seconds: 30
+  batch_size: 500
+  expected_rate_per_minute: 60.0
+  prometheus_port: 9107
+
+data:
+  machine_csv_path: "/config/reference-data/Machines_simulatedV1.csv"
+
+domains:
+  assignment: "hash(mac_address_string) % 3 -> washing/rinsing/chemistry"
+  products:
+    washing:
+      schema: "/schemas/datamesh_event.schema.json"
+      owner: "washing-team"
+      quality_gate: "missing_rate < 0.05 AND field_consistency_score > 0.7"
+    rinsing:
+      schema: "/schemas/datamesh_event.schema.json"
+      owner: "rinsing-team"
+      quality_gate: "missing_rate < 0.05 AND field_consistency_score > 0.7"
+    chemistry:
+      schema: "/schemas/datamesh_event.schema.json"
+      owner: "chemistry-team"
+      quality_gate: "missing_rate < 0.05 AND field_consistency_score > 0.7"
+
+logging:
+  level: "INFO"

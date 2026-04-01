@@ -1,0 +1,35 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Beacon Event Schema (Whitelisted Fields)",
+  "type": "object",
+  "properties": {
+    "Id": { "type": "string" },
+    "DeviceID": { "type": "string" },
+    "BeaconEventID": { "type": "integer" },
+    "MACAddressString": { "type": "string" },
+    "MeanConductivity": { "type": "number" },
+    "SetpointConductivity": { "type": "number" },
+    "MeanWashTankTemp": { "type": "number" },
+    "MeanRinseTemp": { "type": "number" },
+    "EnFillOn": { "type": "integer" },
+    "EnRinseOn": { "type": "integer" },
+    "EnWashOn": { "type": "integer" },
+    "VersionAndMessageType": { "type": "integer" },
+    "DateTimeUTC": { "type": "integer" }
+  },
+  "required": [
+    "Id",
+    "DeviceID",
+    "BeaconEventID",
+    "MACAddressString",
+    "MeanConductivity",
+    "SetpointConductivity",
+    "MeanWashTankTemp",
+    "MeanRinseTemp",
+    "EnFillOn",
+    "EnRinseOn",
+    "EnWashOn",
+    "VersionAndMessageType",
+    "DateTimeUTC"
+  ]
+}

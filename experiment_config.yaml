@@ -36,7 +36,7 @@ workloads:
     description: "Realistic trace replay (event-time pacing, 10× speed)"
     enabled: true
     mode: replicated
-    speed_factor: 0
+    speed_factor: 10
     replication_factor: 1 
     fault_injection: 0.0
 
